@@ -77,6 +77,7 @@ var (
 
 func initCmdOptions() {
 	// 1. Set options to default value.
+	// 设置选项为默认值
 	cmdOps = CmdOptions{
 		ShowVer:          false,
 		LogLevel:         "info",
@@ -95,6 +96,7 @@ func initCmdOptions() {
 	}
 
 	// 2. Replace options with the corresponding env variable if present.
+	// 如果存在，用相应的env变量替换选项
 	util.EnvBoolVar(&cmdOps.ShowVer, "v")
 	util.EnvStringVar(&cmdOps.LogLevel, "log-level")
 	util.EnvStringVar(&cmdOps.LogPaths, "log-paths")
@@ -111,6 +113,7 @@ func initCmdOptions() {
 	util.EnvStringVar(&cmdOps.NacosServiceName, "nacos-service-name")
 
 	// 3. Replace options with the corresponding CLI parameter if present.
+	// 如果有，用相应的CLI参数替换选项
 	flag.BoolVar(&cmdOps.ShowVer, "v", cmdOps.ShowVer, "show build version and quit")
 	flag.StringVar(&cmdOps.LogLevel, "log-level", cmdOps.LogLevel, "one of debug, info, warn, error, dpanic, panic, fatal")
 	flag.StringVar(&cmdOps.LogPaths, "log-paths", cmdOps.LogPaths, "a list of comma-separated log file path. stdout means the console stdout")
@@ -135,7 +138,9 @@ func getVersion() string {
 }
 
 func init() {
+	// 初始化默认配置、从env 或者命令行更新配置
 	initCmdOptions()
+	// 初始化日志相关配置
 	logPaths := strings.Split(cmdOps.LogPaths, ",")
 	util.InitLogger(logPaths)
 	util.SetLogLevel(cmdOps.LogLevel)
@@ -145,6 +150,7 @@ func init() {
 	}
 	var err error
 	var ip net.IP
+	// 获取本机可用ip
 	if ip, err = util.GetOutboundIP(); err != nil {
 		log.Fatal("unable to determine self ip", err)
 	}
@@ -152,11 +158,15 @@ func init() {
 }
 
 func main() {
-	util.Run("clickhouse_sinker", func() error {
-		// Initialize http server for metrics and debug
-		mux := http.NewServeMux()
-		mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-			_, _ = w.Write([]byte(`
+	util.Run(
+		"clickhouse_sinker",
+		// 初始化函数
+		func() error {
+			// Initialize http server for metrics and debug
+			// 为指标和调试初始化 http 服务器
+			mux := http.NewServeMux()
+			mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+				_, _ = w.Write([]byte(`
 				<html><head><title>ClickHouse Sinker</title></head>
 				<body>
 					<h1>ClickHouse Sinker</h1>
@@ -168,86 +178,90 @@ func main() {
 					<p><a href="/live?full=1">Live Full</a></p>
 					<p><a href="/debug/pprof/">pprof</a></p>
 				</body></html>`))
-		})
+			})
 
-		mux.HandleFunc("/state", func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Content-Type", "application/json")
-			if runner != nil && runner.curCfg != nil {
-				var stateLags map[string]cm.StateLag
-				var bs []byte
-				var err error
-				if stateLags, err = cm.GetTaskStateAndLags(runner.curCfg); err == nil {
-					if bs, err = json.Marshal(stateLags); err == nil {
-						_, _ = w.Write(bs)
+			mux.HandleFunc("/state", func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				if runner != nil && runner.curCfg != nil {
+					var stateLags map[string]cm.StateLag
+					var bs []byte
+					var err error
+					if stateLags, err = cm.GetTaskStateAndLags(runner.curCfg); err == nil {
+						if bs, err = json.Marshal(stateLags); err == nil {
+							_, _ = w.Write(bs)
+						}
+					}
+				}
+			})
+			mux.Handle("/metrics", httpMetrics)
+			mux.HandleFunc("/ready", health.Health.ReadyEndpoint) // GET /ready?full=1
+			mux.HandleFunc("/live", health.Health.LiveEndpoint)   // GET /live?full=1
+			mux.HandleFunc("/debug/pprof/", pprof.Index)
+			mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+			mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+			mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+			mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+
+			// cmdOps.HTTPPort=0: let OS choose the listen port, and record the exact metrics URL to log.
+			httpPort := cmdOps.HTTPPort
+			if httpPort != 0 {
+				httpPort = util.GetSpareTCPPort(httpPort)
+			}
+			httpAddr = fmt.Sprintf(":%d", httpPort)
+			listener, err := net.Listen("tcp", httpAddr)
+			if err != nil {
+				util.Logger.Fatal("net.Listen failed", zap.String("httpAddr", httpAddr), zap.Error(err))
+			}
+			httpPort = util.GetNetAddrPort(listener.Addr())
+			httpAddr = fmt.Sprintf("%s:%d", selfIP, httpPort)
+			util.Logger.Info(fmt.Sprintf("Run http server at http://%s/", httpAddr))
+
+			go func() {
+				if err := http.Serve(listener, mux); err != nil {
+					util.Logger.Error("http.ListenAndServe failed", zap.Error(err))
+				}
+			}()
+
+			var rcm cm.RemoteConfManager
+			var properties map[string]interface{}
+			if cmdOps.NacosDataID != "" {
+				util.Logger.Info(fmt.Sprintf("get config from nacos serverAddrs %s, namespaceId %s, group %s, dataId %s",
+					cmdOps.NacosAddr, cmdOps.NacosNamespaceID, cmdOps.NacosGroup, cmdOps.NacosDataID))
+				rcm = &cm.NacosConfManager{}
+				properties = make(map[string]interface{})
+				properties["serverAddrs"] = cmdOps.NacosAddr
+				properties["username"] = cmdOps.NacosUsername
+				properties["password"] = cmdOps.NacosPassword
+				properties["namespaceId"] = cmdOps.NacosNamespaceID
+				properties["group"] = cmdOps.NacosGroup
+				properties["dataId"] = cmdOps.NacosDataID
+				properties["serviceName"] = cmdOps.NacosServiceName
+			} else {
+				util.Logger.Info(fmt.Sprintf("get config from local file %s", cmdOps.LocalCfgFile))
+			}
+			if rcm != nil {
+				if err := rcm.Init(properties); err != nil {
+					util.Logger.Fatal("rcm.Init failed", zap.Error(err))
+				}
+				if cmdOps.NacosServiceName != "" {
+					if err := rcm.Register(selfIP, httpPort); err != nil {
+						util.Logger.Fatal("rcm.Init failed", zap.Error(err))
 					}
 				}
 			}
+			runner = NewSinker(rcm)
+			return runner.Init()
+		},
+		// task 函数
+		func() error {
+			runner.Run()
+			return nil
+		},
+		// 清理函数
+		func() error {
+			runner.Close()
+			return nil
 		})
-		mux.Handle("/metrics", httpMetrics)
-		mux.HandleFunc("/ready", health.Health.ReadyEndpoint) // GET /ready?full=1
-		mux.HandleFunc("/live", health.Health.LiveEndpoint)   // GET /live?full=1
-		mux.HandleFunc("/debug/pprof/", pprof.Index)
-		mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
-		mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
-		mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
-		mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
-
-		// cmdOps.HTTPPort=0: let OS choose the listen port, and record the exact metrics URL to log.
-		httpPort := cmdOps.HTTPPort
-		if httpPort != 0 {
-			httpPort = util.GetSpareTCPPort(httpPort)
-		}
-		httpAddr = fmt.Sprintf(":%d", httpPort)
-		listener, err := net.Listen("tcp", httpAddr)
-		if err != nil {
-			util.Logger.Fatal("net.Listen failed", zap.String("httpAddr", httpAddr), zap.Error(err))
-		}
-		httpPort = util.GetNetAddrPort(listener.Addr())
-		httpAddr = fmt.Sprintf("%s:%d", selfIP, httpPort)
-		util.Logger.Info(fmt.Sprintf("Run http server at http://%s/", httpAddr))
-
-		go func() {
-			if err := http.Serve(listener, mux); err != nil {
-				util.Logger.Error("http.ListenAndServe failed", zap.Error(err))
-			}
-		}()
-
-		var rcm cm.RemoteConfManager
-		var properties map[string]interface{}
-		if cmdOps.NacosDataID != "" {
-			util.Logger.Info(fmt.Sprintf("get config from nacos serverAddrs %s, namespaceId %s, group %s, dataId %s",
-				cmdOps.NacosAddr, cmdOps.NacosNamespaceID, cmdOps.NacosGroup, cmdOps.NacosDataID))
-			rcm = &cm.NacosConfManager{}
-			properties = make(map[string]interface{})
-			properties["serverAddrs"] = cmdOps.NacosAddr
-			properties["username"] = cmdOps.NacosUsername
-			properties["password"] = cmdOps.NacosPassword
-			properties["namespaceId"] = cmdOps.NacosNamespaceID
-			properties["group"] = cmdOps.NacosGroup
-			properties["dataId"] = cmdOps.NacosDataID
-			properties["serviceName"] = cmdOps.NacosServiceName
-		} else {
-			util.Logger.Info(fmt.Sprintf("get config from local file %s", cmdOps.LocalCfgFile))
-		}
-		if rcm != nil {
-			if err := rcm.Init(properties); err != nil {
-				util.Logger.Fatal("rcm.Init failed", zap.Error(err))
-			}
-			if cmdOps.NacosServiceName != "" {
-				if err := rcm.Register(selfIP, httpPort); err != nil {
-					util.Logger.Fatal("rcm.Init failed", zap.Error(err))
-				}
-			}
-		}
-		runner = NewSinker(rcm)
-		return runner.Init()
-	}, func() error {
-		runner.Run()
-		return nil
-	}, func() error {
-		runner.Close()
-		return nil
-	})
 }
 
 // Sinker object maintains number of task for each partition

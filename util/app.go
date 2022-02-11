@@ -31,6 +31,7 @@ func Run(appName string, initFunc, jobFunc, cleanupFunc func() error) {
 		}
 	}()
 
+	// 阻塞等待退出信号
 	WaitForExitSign()
 	Logger.Info(appName + " got the exit signal, start to clean")
 	if err := cleanupFunc(); err != nil {

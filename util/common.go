@@ -49,6 +49,7 @@ var (
 )
 
 // InitGlobalTimerWheel initialize the global timer wheel
+// 初始化全局计时器轮
 func InitGlobalTimerWheel() {
 	if GlobalTimerWheel != nil {
 		return
@@ -85,6 +86,7 @@ func InitGlobalWritingPool(maxWorkers int) {
 }
 
 // StringContains check if contains string in array
+// 检查数组中是否包含字符串
 func StringContains(arr []string, str string) bool {
 	for _, s := range arr {
 		if s == str {
@@ -95,12 +97,14 @@ func StringContains(arr []string, str string) bool {
 }
 
 // GetSourceName returns the field name in message for the given ClickHouse column
+// 在消息中返回给定ClickHouse列的字段名
 func GetSourceName(name string) (sourcename string) {
 	sourcename = strings.Replace(name, ".", "\\.", -1)
 	return
 }
 
 // GetShift returns the smallest `shift` which 1<<shift is no smaller than s
+// 返回不小于 s 的最小 `shift`   1<<shift
 func GetShift(s int) (shift uint) {
 	for shift = 0; (1 << shift) < s; shift++ {
 	}
@@ -108,6 +112,7 @@ func GetShift(s int) (shift uint) {
 }
 
 // GetOutboundIP get preferred outbound ip of this machine
+// 获取此机器的首选出站 ip
 //https://stackoverflow.com/questions/23558425/how-do-i-get-the-local-ip-address-in-go
 func GetOutboundIP() (ip net.IP, err error) {
 	var conn net.Conn
@@ -122,6 +127,7 @@ func GetOutboundIP() (ip net.IP, err error) {
 }
 
 // GetSpareTCPPort find a spare TCP port
+// 找到一个空闲的 TCP 端口
 func GetSpareTCPPort(portBegin int) (port int) {
 LOOP:
 	for port = portBegin; ; port++ {
